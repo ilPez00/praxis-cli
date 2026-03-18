@@ -1,0 +1,51 @@
+# Praxis CLI - Git Ignore
+
+# Session and data files (user-specific)
+*.json
+!package.json
+!tsconfig.json
+session.json
+user_*.json
+users.json
+praxis_data.json
+goals.json
+journal.json
+config.json
+
+# Config (may contain secrets)
+config.json
+.env
+.env.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Test coverage
+coverage/
+*.lcov
+
+# Node modules (if any)
+node_modules/
