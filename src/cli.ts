@@ -107,7 +107,37 @@ class Api {
   checkin(n?: string) { return this.post<Record<string, number>>('/checkins', { note: n }); }
   streak() { return this.get<Record<string, number>>('/checkins/streak'); }
   bets() { return this.get<Array<Record<string, unknown>>>('/bets'); }
+  createBet(d: unknown) { return this.post<Record<string, unknown>>('/bets', d); }
+  cancelBet(id: string) { return this.post<Record<string, unknown>>('/bets/' + id, { cancel: true }); }
   points() { return this.get<Record<string, number>>('/points/balance'); }
+  // Messages
+  messages(u1: string, u2: string) { return this.get<Array<Record<string, unknown>>>('/messages/' + u1 + '/' + u2); }
+  sendMessage(d: unknown) { return this.post<Record<string, unknown>>('/messages/send', d); }
+  // Axiom
+  axiomBrief() { return this.get<Record<string, unknown>>('/ai-coaching/brief'); }
+  axiomDailyBrief() { return this.get<Record<string, unknown>>('/ai-coaching/daily-brief'); }
+  axiomRegenerate() { return this.post<Record<string, unknown>>('/axiom/regenerate'); }
+  axiomNarrative() { return this.post<Record<string, unknown>>('/ai-coaching/weekly-narrative'); }
+  axiomChat(msg: string) { return this.post<Record<string, unknown>>('/ai-coaching/request', { message: msg }); }
+  // Notebook (webapp)
+  notebookEntries(opts?: { entry_type?: string; domain?: string; search?: string; goal_id?: string; limit?: number }) {
+    const p = new URLSearchParams();
+    if (opts?.entry_type) p.set('entry_type', opts.entry_type);
+    if (opts?.domain) p.set('domain', opts.domain);
+    if (opts?.search) p.set('search', opts.search);
+    if (opts?.goal_id) p.set('goal_id', opts.goal_id);
+    if (opts?.limit) p.set('limit', String(opts.limit));
+    const q = p.toString();
+    return this.get<Array<Record<string, unknown>>>('/notebook/entries' + (q ? '?' + q : ''));
+  }
+  createNotebookEntry(d: unknown) { return this.post<Record<string, unknown>>('/notebook/entries', d); }
+  notebookStats() { return this.get<Record<string, unknown>>('/notebook/stats'); }
+  // Places (map)
+  places() { return this.get<Array<Record<string, unknown>>>('/places'); }
+  createPlace(d: unknown) { return this.post<Record<string, unknown>>('/places', d); }
+  joinPlace(id: string) { return this.post<Record<string, unknown>>('/places/' + id + '/join'); }
+  // Matches
+  matches() { return this.get<Array<Record<string, unknown>>>('/matches'); }
 }
 
 function nbDir(t: string): string {
@@ -444,26 +474,6 @@ prog.command('streak').action(async () => {
   }
 });
 
-// bets
-prog.command('bets').action(async () => {
-  const c = loadCfg();
-  const api = new Api(c);
-  const sp = ora('Fetching...').start();
-  try {
-    const b = await api.bets();
-    sp.succeed();
-    if (!b?.length) { console.log(th.dim('No bets.')); return; }
-    const tbl = new Table({ head: [th.b('Goal'), th.b('Stake'), th.b('Deadline'), th.b('Status')], style: { head: [] } });
-    for (const x of b) {
-      const st = x.status === 'won' ? th.ok('\u2713') : x.status === 'lost' ? th.err('\u2717') : th.inf('active');
-      tbl.push([th.b(String(x.goalName ?? '\u2014')), (x.stakePoints ?? 0) + ' PP', x.deadline ? new Date(x.deadline as string).toLocaleDateString() : '\u2014', st]);
-    }
-    console.log(tbl.toString());
-  } catch (e: unknown) {
-    sp.fail((e as Error).message);
-  }
-});
-
 // sync
 const sc = prog.command('sync').description('Sync');
 sc.command('pull').action(async () => {
@@ -502,6 +512,197 @@ sc.command('push').action(() => {
   const c = loadCfg();
   if (!c.token) { console.log(th.err('Not logged in.')); process.exit(1); }
   console.log(th.p('\u2713') + ' Entries pushed on creation.');
+});
+
+// ── bets (enhanced) ──────────────────────────────────────────────────────
+const betsC = prog.command('bets').description('Accountability bets');
+betsC.command('list').alias('ls').action(async () => {
+  const c = loadCfg(); const api = new Api(c); const sp = ora('Fetching...').start();
+  try {
+    const b = await api.bets(); sp.succeed();
+    if (!b?.length) { console.log(th.dim('No bets.')); return; }
+    const tbl = new Table({ head: [th.b('ID'), th.b('Goal'), th.b('Stake'), th.b('Deadline'), th.b('Status')], style: { head: [] } });
+    for (const x of b) {
+      const st = x.status === 'won' ? th.ok('\u2713') : x.status === 'lost' ? th.err('\u2717') : th.inf('active');
+      tbl.push([String(x.id ?? '').slice(0, 8), th.b(String(x.goalName ?? '\u2014')), (x.stakePoints ?? 0) + ' PP', x.deadline ? new Date(x.deadline as string).toLocaleDateString() : '\u2014', st]);
+    }
+    console.log(tbl.toString());
+  } catch (e: unknown) { sp.fail((e as Error).message); }
+});
+betsC.command('add').description('Create a bet').option('-g, --goal <goal>', 'Goal name').option('-s, --stake <n>', 'Stake in PP').option('-d, --deadline <date>', 'Deadline (ISO date)').action(async (opts?: { goal?: string; stake?: string; deadline?: string }) => {
+  const c = loadCfg();
+  let goal = opts?.goal ?? ''; let stake = opts?.stake ?? ''; let deadline = opts?.deadline ?? '';
+  if (!goal) goal = await ask('Goal name: ');
+  if (!stake) stake = await ask('Stake (PP): ');
+  if (!deadline) deadline = await ask('Deadline (YYYY-MM-DD): ');
+  const sp = ora('Creating bet...').start();
+  try {
+    const api = new Api(c);
+    await api.createBet({ goalName: goal, stakePoints: Number(stake), deadline: deadline + 'T23:59:59Z' });
+    sp.succeed(th.p('\u2713') + ' Bet created: ' + th.b(goal) + ' for ' + stake + ' PP');
+  } catch (e: unknown) { sp.fail((e as Error).message); }
+});
+betsC.command('cancel <id>').description('Cancel a bet').action(async (id: string) => {
+  const c = loadCfg(); const sp = ora('Canceling...').start();
+  try { const api = new Api(c); await api.cancelBet(id); sp.succeed(th.p('\u2713') + ' Bet canceled'); }
+  catch (e: unknown) { sp.fail((e as Error).message); }
+});
+
+// ── axiom ─────────────────────────────────────────────────────────────────
+const ax = prog.command('axiom').description('Axiom AI coach');
+ax.command('brief').description('Today AI brief').action(async () => {
+  const c = loadCfg(); const api = new Api(c); const sp = ora('Fetching brief...').start();
+  try {
+    const b = await api.axiomDailyBrief(); sp.succeed();
+    const msg = (b as Record<string, string>)?.message ?? (b as Record<string, string>)?.brief ?? '';
+    const routine = (b as Record<string, string>)?.routine ?? '';
+    console.log(th.card('Axiom Daily Brief', [msg, routine ? '\n' + th.b('Routine:') + '\n' + routine : ''].join('\n')));
+  } catch (e: unknown) { sp.fail((e as Error).message); }
+});
+ax.command('regenerate').description('Regenerate today brief (costs 50 PP for free)').action(async () => {
+  const c = loadCfg(); const api = new Api(c); const sp = ora('Regenerating...').start();
+  try { const r = await api.axiomRegenerate(); sp.succeed(th.p('\u2713') + ' ' + String((r as Record<string, string>)?.message ?? 'Brief regenerated')); }
+  catch (e: unknown) { sp.fail((e as Error).message); }
+});
+ax.command('narrative').description('Weekly AI narrative').action(async () => {
+  const c = loadCfg(); const api = new Api(c); const sp = ora('Generating narrative...').start();
+  try { const r = await api.axiomNarrative(); sp.succeed(); const msg = (r as Record<string, string>)?.narrative ?? (r as Record<string, string>)?.message ?? ''; console.log(th.card('Weekly Narrative', msg)); }
+  catch (e: unknown) { sp.fail((e as Error).message); }
+});
+ax.command('chat [msg]').description('Chat with Axiom (costs 50 PP for free)').action(async (msg?: string) => {
+  const c = loadCfg(); const api = new Api(c);
+  if (!msg) msg = await ask('Axiom: ');
+  const sp = ora('Thinking...').start();
+  try {
+    const r = await api.axiomChat(msg);
+    sp.succeed();
+    const reply = (r as Record<string, string>)?.reply ?? (r as Record<string, string>)?.message ?? (r as Record<string, string>)?.response ?? '';
+    console.log(th.card('Axiom', reply));
+  } catch (e: unknown) { sp.fail((e as Error).message); }
+});
+
+// ── messages ──────────────────────────────────────────────────────────────
+const msgC = prog.command('messages').alias('msg').description('Messages');
+msgC.command('view <u1> <u2>').description('View chat with user').action(async (u1: string, u2: string) => {
+  const c = loadCfg(); const api = new Api(c); const sp = ora('Fetching messages...').start();
+  try {
+    const msgs = await api.messages(u1, u2); sp.succeed();
+    if (!msgs?.length) { console.log(th.dim('No messages.')); return; }
+    for (const m of msgs) {
+      const from = (m.sender_id === c.userId) ? th.b('You') : th.inf(String(m.sender_name ?? 'Unknown'));
+      console.log('  ' + from + ' ' + th.dim(new Date(m.created_at as string).toLocaleTimeString()) + ': ' + (m.content ?? ''));
+    }
+  } catch (e: unknown) { sp.fail((e as Error).message); }
+});
+msgC.command('send <to>').description('Send message').option('-c, --content <c>', 'Message').action(async (to: string, opts?: { content?: string }) => {
+  const c = loadCfg();
+  let content = opts?.content ?? '';
+  if (!content) content = await ask('Message: ');
+  const sp = ora('Sending...').start();
+  try {
+    const api = new Api(c);
+    await api.sendMessage({ receiver_id: to, content });
+    sp.succeed(th.p('\u2713') + ' Message sent');
+  } catch (e: unknown) { sp.fail((e as Error).message); }
+});
+
+// ── map (places) ──────────────────────────────────────────────────────────
+const mapC = prog.command('map').description('Places & map');
+mapC.command('list').alias('ls').action(async () => {
+  const c = loadCfg(); const api = new Api(c); const sp = ora('Fetching places...').start();
+  try {
+    const places = await api.places(); sp.succeed();
+    if (!places?.length) { console.log(th.dim('No places.')); return; }
+    const tbl = new Table({ head: [th.b('Name'), th.b('Type'), th.b('Members'), th.b('Lat'), th.b('Lng')], style: { head: [] } });
+    for (const p of places) {
+      tbl.push([th.b(String(p.name ?? '\u2014')), String(p.place_type ?? '\u2014'), String(p.member_count ?? 0), String(p.latitude ?? '\u2014'), String(p.longitude ?? '\u2014')]);
+    }
+    console.log(tbl.toString());
+  } catch (e: unknown) { sp.fail((e as Error).message); }
+});
+mapC.command('add').option('-n, --name <n>', 'Name').option('-t, --type <t>', 'Type').option('--lat <lat>', 'Latitude').option('--lng <lng>', 'Longitude').action(async (opts?: { name?: string; type?: string; lat?: string; lng?: string }) => {
+  const c = loadCfg();
+  let name = opts?.name ?? ''; let type = opts?.type ?? '';
+  if (!name) name = await ask('Place name: ');
+  if (!type) type = await ask('Type (study/gym/cafe/etc): ');
+  const sp = ora('Creating place...').start();
+  try {
+    const api = new Api(c);
+    await api.createPlace({ name, place_type: type, latitude: opts?.lat ? Number(opts.lat) : null, longitude: opts?.lng ? Number(opts.lng) : null });
+    sp.succeed(th.p('\u2713') + ' Place "' + th.b(name) + '" created');
+  } catch (e: unknown) { sp.fail((e as Error).message); }
+});
+mapC.command('join <id>').description('Join a place').action(async (id: string) => {
+  const c = loadCfg(); const sp = ora('Joining...').start();
+  try { const api = new Api(c); await api.joinPlace(id); sp.succeed(th.p('\u2713') + ' Joined'); }
+  catch (e: unknown) { sp.fail((e as Error).message); }
+});
+
+// ── notebook pull (from webapp to local git-like store) ───────────────────
+nb.command('pull [topic]').description('Pull entries from webapp').option('-t, --type <type>', 'Filter by entry_type').option('-d, --domain <domain>', 'Filter by domain').option('-s, --search <search>', 'Search content').option('-l, --limit <n>', 'Limit', '100').action(async (topic?: string, opts?: { type?: string; domain?: string; search?: string; limit?: string }) => {
+  const c = loadCfg();
+  if (!c.token) { console.log(th.err('Not logged in.')); process.exit(1); }
+  const sp = ora('Pulling from webapp...').start();
+  try {
+    const api = new Api(c);
+    const entries = await api.notebookEntries({ entry_type: opts?.type, domain: opts?.domain, search: opts?.search, limit: Number(opts?.limit ?? '100') });
+    sp.succeed();
+    if (!entries?.length) { console.log(th.dim('No entries found.')); return; }
+    // Group by topic
+    const grouped: Record<string, Array<Record<string, unknown>>> = {};
+    for (const e of entries) {
+      const tp = topic ?? String(e.topic ?? e.domain ?? e.goal_id ?? 'journal');
+      if (!grouped[tp]) grouped[tp] = [];
+      grouped[tp].push(e);
+    }
+    let total = 0;
+    for (const [tp, ents] of Object.entries(grouped)) {
+      initTopic(tp);
+      for (const e of ents) {
+        addEntry(tp, String(e.title ?? e.message ?? 'entry'), String(e.content ?? ''), c.userName ?? 'anon', {
+          mood: e.mood as string | undefined,
+        });
+        total++;
+      }
+    }
+    console.log(th.p('\u2713') + ' Pulled ' + th.b(String(total)) + ' entries into ' + th.b(String(Object.keys(grouped).length)) + ' topics');
+    if (topic) {
+      console.log('\n' + th.b('Latest entries in ' + topic + ':'));
+      const log = getLog(topic, 5);
+      for (const e of log) console.log('  ' + th.p(e.sha.slice(0, 7)) + ' ' + e.message + ' ' + th.dim('(' + new Date(e.createdAt).toLocaleDateString() + ')'));
+    }
+  } catch (e: unknown) { sp.fail((e as Error).message); }
+});
+
+nb.command('stats').description('Notebook statistics').action(async () => {
+  const c = loadCfg();
+  if (!c.token) { console.log(th.err('Not logged in.')); process.exit(1); }
+  const sp = ora('Fetching stats...').start();
+  try {
+    const api = new Api(c);
+    const s = await api.notebookStats();
+    sp.succeed();
+    console.log(th.card('Notebook Stats', [
+      th.row('Total entries', String((s as Record<string, number>)?.total_entries ?? '\u2014')),
+      th.row('Topics', String((s as Record<string, number>)?.unique_topics ?? '\u2014')),
+      th.row('This week', String((s as Record<string, number>)?.this_week ?? '\u2014')),
+      th.row('Streak', String((s as Record<string, number>)?.entry_streak ?? '\u2014')),
+    ].join('\n')));
+  } catch (e: unknown) { sp.fail((e as Error).message); }
+});
+
+// ── matches ───────────────────────────────────────────────────────────────
+prog.command('matches').description('View your matches').action(async () => {
+  const c = loadCfg(); const api = new Api(c); const sp = ora('Fetching matches...').start();
+  try {
+    const m = await api.matches(); sp.succeed();
+    if (!m?.length) { console.log(th.dim('No matches yet.')); return; }
+    const tbl = new Table({ head: [th.b('Name'), th.b('Match %'), th.b('Goal'), th.b('Streak')], style: { head: [] } });
+    for (const x of m) {
+      tbl.push([th.b(String(x.name ?? x.user_name ?? '\u2014')), String((x.match_score ?? x.score ?? 0) + '%'), String(x.goals ?? x.common_goals ?? '\u2014'), th.fire(Number(x.streak ?? 0))]);
+    }
+    console.log(tbl.toString());
+  } catch (e: unknown) { sp.fail((e as Error).message); }
 });
 
 prog.parse();
